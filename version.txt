@@ -1,2 +1,2 @@
-2.0.0
-https://github.com/NaRaKeLoS/netblocker/releases
+1.1.0
+https://raw.githubusercontent.com/NaRaKeLoS/netblocker/main/net_blocker.py
