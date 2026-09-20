@@ -1,2 +1,2 @@
-1.2.0
+1.3.0
 https://raw.githubusercontent.com/NaRaKeLoS/netblocker/main/net_blocker.py
