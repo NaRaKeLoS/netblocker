@@ -1,21 +1,27 @@
-"""
-NetBlocker v1.1.0 - odcina internet wybranej aplikacji na Windows 11
+from pathlib import Path
+
+code = r'''"""
+NetBlocker v1.3.0 - odcina internet wybranej aplikacji na Windows 11
+
+Nowości:
 - blokada na stałe
 - LAG: krótkie odcięcie internetu
 - motywy kolorystyczne
 - własne skróty klawiszowe
-- animacje
+- animacje UI
+- wybór języka przy pierwszym uruchomieniu
+- zmiana języka w ustawieniach
 - automatyczne sprawdzanie aktualizacji
-- aktualizacja programu jednym kliknięciem
+- automatyczne pobieranie aktualizacji przy starcie
+- aktualizacja programu jako .exe
+- wybór procesu z klawiatury: B -> pierwszy proces na B,
+  kolejne B -> następny proces na B
 
-Wymagania:
+Wymagania do uruchomienia jako .py:
     pip install customtkinter psutil pywin32 keyboard requests
 
-Uruchomienie:
-    python net_blocker.py
-
-Konfiguracja:
-    %APPDATA%\\NetBlocker\\config.json
+Budowanie .exe:
+    pyinstaller --noconfirm --onefile --windowed --uac-admin --name NetBlocker net_blocker.py
 """
 
 import copy
@@ -27,8 +33,8 @@ import subprocess
 import sys
 import threading
 import time
+import tkinter as tk
 import tkinter.messagebox as messagebox
-import webbrowser
 
 import customtkinter as ctk
 import keyboard
@@ -40,17 +46,17 @@ import win32com.client
 # WERSJA I AKTUALIZACJE
 # ---------------------------------------------------------------------
 
-VERSION = "1.1.0"
+VERSION = "1.3.0"
 
-# Plik version.txt na GitHubie
 VERSION_CHECK_URL = (
     "https://raw.githubusercontent.com/NaRaKeLoS/netblocker/"
     "refs/heads/main/version.txt"
 )
 
-# Strona projektu - awaryjnie, jeśli version.txt nie poda linku
 DOWNLOAD_PAGE_URL = "https://github.com/NaRaKeLoS/netblocker"
 
+UPDATE_EXE_NAME = "NetBlocker.exe"
+UPDATE_MIN_SIZE = 100_000
 
 PREFIX = "NetBlocker_"
 
@@ -59,10 +65,6 @@ ACTION_BLOCK = 0
 PROFILES_ALL = 0x7FFFFFFF
 
 
-# =====================================================================
-# WERSJE
-# =====================================================================
-
 def parse_version(v):
     try:
         return tuple(int(x) for x in v.strip().split("."))
@@ -70,32 +72,46 @@ def parse_version(v):
         return (0,)
 
 
+def release_download_url(version):
+    """
+    Domyślna lokalizacja pliku EXE w GitHub Releases.
+
+    Release:
+        v1.3.0
+
+    Asset:
+        NetBlocker.exe
+    """
+    return (
+        f"https://github.com/NaRaKeLoS/netblocker/"
+        f"releases/download/v{version}/{UPDATE_EXE_NAME}"
+    )
+
+
 def check_for_update(result_queue):
     """
-    Sprawdza version.txt.
-    
-    Pierwsza linia:
-        numer wersji
+    version.txt:
+        linia 1 -> numer wersji
+        linia 2 -> opcjonalny bezpośredni URL do EXE
 
-    Druga linia:
-        bezpośredni link do nowego net_blocker.py
+    Jeżeli druga linia nie istnieje, program buduje URL:
+        Releases/download/vX.Y.Z/NetBlocker.exe
     """
 
     try:
-        import requests
         import random
+        import requests
 
         bust = f"?_={int(time.time())}{random.randint(1000, 9999)}"
 
         r = requests.get(
             VERSION_CHECK_URL + bust,
-            timeout=5,
+            timeout=7,
             headers={
                 "Cache-Control": "no-cache",
-                "Pragma": "no-cache"
-            }
+                "Pragma": "no-cache",
+            },
         )
-
         r.raise_for_status()
 
         lines = [
@@ -112,59 +128,226 @@ def check_for_update(result_queue):
         if len(lines) >= 2:
             download_url = lines[1]
         else:
-            download_url = DOWNLOAD_PAGE_URL
+            download_url = release_download_url(remote_version)
 
         if parse_version(remote_version) > parse_version(VERSION):
             result_queue.put(
                 (
                     "update_available",
                     remote_version,
-                    download_url
+                    download_url,
                 )
             )
 
     except Exception:
-        # Brak internetu / GitHub niedostępny / błąd pliku itd.
         pass
 
 
-# =====================================================================
+# ---------------------------------------------------------------------
+# JĘZYKI
+# ---------------------------------------------------------------------
+
+LANGUAGES = {
+    "pl": "Polski",
+    "en": "English",
+}
+
+
+TEXT = {
+    "pl": {
+        "app_subtitle": "odcinaj internet wybranym aplikacjom",
+        "settings": "Ustawienia",
+        "back": "← Wróć",
+        "application": "APLIKACJA",
+        "none": "(brak)",
+        "refresh": "Odśwież",
+        "blocked": "Internet ODCIĘTY",
+        "working": "Internet działa",
+        "choose_app": "Wybierz aplikację",
+        "cut_internet": "Odetnij internet",
+        "restore_internet": "Przywróć internet",
+        "lag": "⚡ LAG",
+        "lag_running": "LAG…",
+        "lag_time": "Czas odcięcia:",
+        "permanent_note": "Blokada na stałe zostaje w zaporze po zamknięciu programu.",
+        "block_section": "BLOKADA",
+        "lag_section": "LAG",
+        "theme": "MOTYW",
+        "hotkeys": "SKRÓTY KLAWISZOWE (GLOBALNE)",
+        "other": "INNE",
+        "about": "O PROGRAMIE",
+        "always_top": "Okno zawsze na wierzchu",
+        "auto_update": "Automatycznie pobieraj aktualizacje przy starcie",
+        "language": "JĘZYK",
+        "language_desc": "Możesz zmienić język programu w dowolnym momencie.",
+        "check_updates": "Sprawdź aktualizacje",
+        "version": "Wersja",
+        "latest": "(to najnowsza wersja)",
+        "checking": "(sprawdzam...)",
+        "new_version": "(nowa: {version})",
+        "available_update": "Dostępna nowa wersja {version} (masz {current})",
+        "download": "Pobierz",
+        "install": "Zainstaluj",
+        "skip": "Pomiń",
+        "downloading": "Pobieranie aktualizacji…",
+        "downloaded": "Aktualizacja pobrana. Zainstalować teraz?",
+        "downloaded_ready": "Aktualizacja pobrana. Kliknij „Zainstaluj”, aby ją wgrać.",
+        "download_error_bar": "Nie udało się pobrać aktualizacji.",
+        "download_failed": "Nie udało się pobrać aktualizacji:\n{error}",
+        "invalid_update": "Pobrany plik nie wygląda na poprawny plik EXE.",
+        "update_not_exe": "Automatyczna aktualizacja wymaga wersji EXE.",
+        "no_update_url": "Nie znaleziono adresu aktualizacji.",
+        "install_error": "Nie udało się przygotować aktualizacji:\n{error}",
+        "install_now": "Aktualizacja jest gotowa.\n\nProgram zostanie zamknięty i uruchomiony ponownie w nowej wersji.\n\nKontynuować?",
+        "record_hotkey": "Naciśnij skrót…",
+        "no_hotkey": "— brak —",
+        "hotkey_help": "Kliknij pole skrótu i naciśnij nową kombinację klawiszy.\nEsc anuluje. Skróty działają na aplikację wybraną na liście.",
+        "toggle_hotkey": "Odetnij / przywróć",
+        "lag_hotkey": "Lag",
+        "hotkey_used": "Skrót {hotkey} jest już użyty w innej akcji.",
+        "no_app": "Najpierw wybierz aplikację.",
+        "no_app_short": "Nie wybrano aplikacji",
+        "internet_restored": "Internet przywrócony",
+        "internet_cut": "Internet odcięty",
+        "lag_finished": "Lag zakończony",
+        "lag_error": "Nie udało się wywołać lagu:\n{error}",
+        "firewall_error": "Nie udało się zmienić reguły zapory:\n{error}",
+        "language_title": "Wybierz język",
+        "language_subtitle": "Wybierz język programu.",
+        "continue": "Dalej",
+        "language_changed": "Język zmieniony",
+        "process_found": "Wybrano: {name}",
+        "no_process_letter": "Brak procesu zaczynającego się na „{letter}”.",
+        "theme_dark": "Ciemny",
+        "theme_light": "Jasny",
+        "theme_midnight": "Północ",
+        "theme_ocean": "Ocean",
+        "theme_sunset": "Zachód słońca",
+        "theme_hacker": "Hacker",
+    },
+    "en": {
+        "app_subtitle": "cut internet access for selected applications",
+        "settings": "Settings",
+        "back": "← Back",
+        "application": "APPLICATION",
+        "none": "(none)",
+        "refresh": "Refresh",
+        "blocked": "Internet BLOCKED",
+        "working": "Internet works",
+        "choose_app": "Choose an application",
+        "cut_internet": "Block internet",
+        "restore_internet": "Restore internet",
+        "lag": "⚡ LAG",
+        "lag_running": "LAG…",
+        "lag_time": "Disconnect time:",
+        "permanent_note": "Permanent blocking remains in the firewall after closing the program.",
+        "block_section": "BLOCKING",
+        "lag_section": "LAG",
+        "theme": "THEME",
+        "hotkeys": "GLOBAL HOTKEYS",
+        "other": "OTHER",
+        "about": "ABOUT",
+        "always_top": "Always on top",
+        "auto_update": "Automatically download updates at startup",
+        "language": "LANGUAGE",
+        "language_desc": "You can change the program language at any time.",
+        "check_updates": "Check for updates",
+        "version": "Version",
+        "latest": "(up to date)",
+        "checking": "(checking...)",
+        "new_version": "(new: {version})",
+        "available_update": "New version {version} available (you have {current})",
+        "download": "Download",
+        "install": "Install",
+        "skip": "Skip",
+        "downloading": "Downloading update…",
+        "downloaded": "Update downloaded. Install it now?",
+        "downloaded_ready": "Update downloaded. Click “Install” to install it.",
+        "download_error_bar": "Failed to download update.",
+        "download_failed": "Failed to download update:\n{error}",
+        "invalid_update": "The downloaded file does not look like a valid EXE.",
+        "update_not_exe": "Automatic updates require the EXE version.",
+        "no_update_url": "No update URL was found.",
+        "install_error": "Failed to prepare the update:\n{error}",
+        "install_now": "The update is ready.\n\nThe program will close and restart in the new version.\n\nContinue?",
+        "record_hotkey": "Press a shortcut…",
+        "no_hotkey": "— none —",
+        "hotkey_help": "Click the shortcut field and press a new key combination.\nEsc cancels. Shortcuts work on the selected application.",
+        "toggle_hotkey": "Block / restore",
+        "lag_hotkey": "Lag",
+        "hotkey_used": "Shortcut {hotkey} is already used by another action.",
+        "no_app": "Choose an application first.",
+        "no_app_short": "No application selected",
+        "internet_restored": "Internet restored",
+        "internet_cut": "Internet blocked",
+        "lag_finished": "Lag finished",
+        "lag_error": "Failed to trigger lag:\n{error}",
+        "firewall_error": "Failed to change firewall rule:\n{error}",
+        "language_title": "Choose language",
+        "language_subtitle": "Choose the program language.",
+        "continue": "Continue",
+        "language_changed": "Language changed",
+        "process_found": "Selected: {name}",
+        "no_process_letter": "No process starting with “{letter}”.",
+        "theme_dark": "Dark",
+        "theme_light": "Light",
+        "theme_midnight": "Midnight",
+        "theme_ocean": "Ocean",
+        "theme_sunset": "Sunset",
+        "theme_hacker": "Hacker",
+    },
+}
+
+
+def t(lang, key, **kwargs):
+    value = TEXT.get(lang, TEXT["pl"]).get(key, key)
+    try:
+        return value.format(**kwargs)
+    except Exception:
+        return value
+
+
+# ---------------------------------------------------------------------
 # KONFIGURACJA
-# =====================================================================
+# ---------------------------------------------------------------------
 
 CONFIG_DIR = os.path.join(
     os.environ.get("APPDATA", "."),
-    "NetBlocker"
+    "NetBlocker",
 )
 
 CONFIG_PATH = os.path.join(
     CONFIG_DIR,
-    "config.json"
+    "config.json",
 )
 
-
 DEFAULT_CFG = {
+    "language": None,
     "theme": "Ciemny",
     "hotkeys": {
         "toggle": "ctrl+alt+b",
-        "lag": "ctrl+alt+l"
+        "lag": "ctrl+alt+l",
     },
     "lag_ms": 500,
     "topmost": False,
+    "auto_update": True,
     "last_app": None,
-    "skip_version": None
+    "skip_version": None,
 }
 
 
-HOTKEY_LABELS = {
-    "toggle": "Odetnij / przywróć",
-    "lag": "Lag"
+THEME_KEYS = {
+    "Ciemny": "theme_dark",
+    "Jasny": "theme_light",
+    "Północ": "theme_midnight",
+    "Ocean": "theme_ocean",
+    "Zachód słońca": "theme_sunset",
+    "Hacker": "theme_hacker",
 }
 
 
 def load_config():
     cfg = copy.deepcopy(DEFAULT_CFG)
-
     file_missing_or_broken = True
 
     try:
@@ -172,11 +355,13 @@ def load_config():
             data = json.load(f)
 
         for k in (
+            "language",
             "theme",
             "lag_ms",
             "topmost",
+            "auto_update",
             "last_app",
-            "skip_version"
+            "skip_version",
         ):
             if k in data:
                 cfg[k] = data[k]
@@ -199,26 +384,24 @@ def load_config():
 def save_config(cfg):
     try:
         os.makedirs(CONFIG_DIR, exist_ok=True)
-
         tmp_path = CONFIG_PATH + ".tmp"
 
         with open(
             tmp_path,
             "w",
-            encoding="utf-8"
+            encoding="utf-8",
         ) as f:
             json.dump(
                 cfg,
                 f,
                 indent=2,
-                ensure_ascii=False
+                ensure_ascii=False,
             )
 
         os.replace(
             tmp_path,
-            CONFIG_PATH
+            CONFIG_PATH,
         )
-
         return True
 
     except Exception:
@@ -229,9 +412,9 @@ def fmt_hotkey(hk):
     return hk.upper().replace("+", " + ") if hk else ""
 
 
-# =====================================================================
+# ---------------------------------------------------------------------
 # MOTYWY
-# =====================================================================
+# ---------------------------------------------------------------------
 
 def _theme(
     mode,
@@ -246,7 +429,7 @@ def _theme(
     green="#2fa36b",
     green_h="#26855a",
     orange="#e08a1e",
-    orange_h="#bd7418"
+    orange_h="#bd7418",
 ):
     return dict(
         mode=mode,
@@ -261,7 +444,7 @@ def _theme(
         green=green,
         green_h=green_h,
         orange=orange,
-        orange_h=orange_h
+        orange_h=orange_h,
     )
 
 
@@ -273,9 +456,8 @@ THEMES = {
         "#e8eaed",
         "#8b919c",
         "#3b82f6",
-        "#2f6bd0"
+        "#2f6bd0",
     ),
-
     "Jasny": _theme(
         "light",
         "#eef0f4",
@@ -283,9 +465,8 @@ THEMES = {
         "#1c1f26",
         "#6b7280",
         "#2563eb",
-        "#1d4fbf"
+        "#1d4fbf",
     ),
-
     "Północ": _theme(
         "dark",
         "#120f1f",
@@ -293,9 +474,8 @@ THEMES = {
         "#ece9f7",
         "#8f88ad",
         "#8b5cf6",
-        "#7444d8"
+        "#7444d8",
     ),
-
     "Ocean": _theme(
         "dark",
         "#0b1a24",
@@ -303,9 +483,8 @@ THEMES = {
         "#e2f1f8",
         "#7d9db0",
         "#06b6d4",
-        "#0592ab"
+        "#0592ab",
     ),
-
     "Zachód słońca": _theme(
         "dark",
         "#1f1414",
@@ -313,9 +492,8 @@ THEMES = {
         "#f6e9e4",
         "#a58880",
         "#f97316",
-        "#d5600e"
+        "#d5600e",
     ),
-
     "Hacker": _theme(
         "dark",
         "#050805",
@@ -329,14 +507,14 @@ THEMES = {
         green="#00e676",
         green_h="#00b85e",
         orange="#ffb300",
-        orange_h="#d69600"
-    )
+        orange_h="#d69600",
+    ),
 }
 
 
-# =====================================================================
+# ---------------------------------------------------------------------
 # ADMIN
-# =====================================================================
+# ---------------------------------------------------------------------
 
 def is_admin():
     try:
@@ -350,24 +528,26 @@ def is_admin():
 def relaunch_as_admin():
     params = " ".join(
         f'"{a}"'
-        for a in sys.argv
+        for a in sys.argv[1:]
     )
+
+    executable = sys.executable
 
     ctypes.windll.shell32.ShellExecuteW(
         None,
         "runas",
-        sys.executable,
+        executable,
         params,
         None,
-        1
+        1,
     )
 
     sys.exit(0)
 
 
-# =====================================================================
+# ---------------------------------------------------------------------
 # WINDOWS FIREWALL
-# =====================================================================
+# ---------------------------------------------------------------------
 
 policy = win32com.client.Dispatch(
     "HNetCfg.FwPolicy2"
@@ -379,7 +559,7 @@ def rule_names(path: str, kind: str):
 
     return [
         f"{PREFIX}{kind}_out_{p}",
-        f"{PREFIX}{kind}_in_{p}"
+        f"{PREFIX}{kind}_in_{p}",
     ]
 
 
@@ -395,7 +575,7 @@ def add_rule(
     name,
     path,
     direction,
-    enabled
+    enabled,
 ):
     r = win32com.client.Dispatch(
         "HNetCfg.FWRule"
@@ -415,11 +595,11 @@ def add_rule(
 def ensure_rules(
     path,
     kind,
-    enabled
+    enabled,
 ):
     for name, direction in zip(
         rule_names(path, kind),
-        (DIR_OUT, DIR_IN)
+        (DIR_OUT, DIR_IN),
     ):
         if rule_exists(name):
             policy.Rules.Item(name).Enabled = enabled
@@ -428,14 +608,14 @@ def ensure_rules(
                 name,
                 path,
                 direction,
-                enabled
+                enabled,
             )
 
 
 def set_enabled(
     path,
     kind,
-    enabled
+    enabled,
 ):
     for name in rule_names(path, kind):
         try:
@@ -446,7 +626,7 @@ def set_enabled(
 
 def remove_rules(
     path,
-    kind
+    kind,
 ):
     for name in rule_names(path, kind):
         while rule_exists(name):
@@ -486,9 +666,9 @@ def cleanup_stale_lag_rules():
         pass
 
 
-# =====================================================================
+# ---------------------------------------------------------------------
 # PROCESY
-# =====================================================================
+# ---------------------------------------------------------------------
 
 def list_apps():
     found = {}
@@ -502,15 +682,13 @@ def list_apps():
         if (
             not exe
             or not name
-            or exe.lower().startswith(
-                r"c:\windows"
-            )
+            or exe.lower().startswith(r"c:\windows")
         ):
             continue
 
         found[exe.lower()] = (
             name,
-            exe
+            exe,
         )
 
     names = [
@@ -522,7 +700,7 @@ def list_apps():
 
     for name, exe in sorted(
         found.values(),
-        key=lambda x: x[0].lower()
+        key=lambda x: x[0].lower(),
     ):
         label = name
 
@@ -537,9 +715,9 @@ def list_apps():
     return result
 
 
-# =====================================================================
+# ---------------------------------------------------------------------
 # GUI
-# =====================================================================
+# ---------------------------------------------------------------------
 
 class App(ctk.CTk):
 
@@ -550,8 +728,10 @@ class App(ctk.CTk):
 
         self.T = THEMES.get(
             self.cfg["theme"],
-            THEMES["Ciemny"]
+            THEMES["Ciemny"],
         )
+
+        self.lang = self.cfg.get("language") or "pl"
 
         self.apps = {}
         self.current_label = None
@@ -563,45 +743,62 @@ class App(ctk.CTk):
         self.hk_btns = {}
 
         self._last_toggle = 0.0
-        self._pulse_job = None
+        self._pulse_jobs = set()
 
         self.q = queue.Queue()
+
+        self._page = "main"
+        self._update_url = None
+        self._pending_version = None
+        self._update_temp = None
+        self._update_downloading = False
+
+        self._key_cycle_letter = None
+        self._key_cycle_index = -1
+        self._key_cycle_time = 0.0
 
         self.title(
             f"NetBlocker v{VERSION}"
         )
 
         self.geometry(
-            "460x680"
+            "460x700"
         )
 
-        self.resizable(
-            False,
-            False
+        self.minsize(
+            460,
+            700,
+        )
+
+        self.maxsize(
+            460,
+            700,
         )
 
         self.attributes(
             "-topmost",
-            bool(self.cfg["topmost"])
+            bool(self.cfg["topmost"]),
         )
 
         self.attributes(
             "-alpha",
-            0.0
+            0.0,
         )
 
-        self.build_ui("main")
+        if not self.cfg.get("language"):
+            self.choose_language()
 
+        self.build_ui("main")
         self.register_hotkeys()
 
         self.protocol(
             "WM_DELETE_WINDOW",
-            self.on_close
+            self.on_close,
         )
 
         self.after(
             30,
-            self.poll_queue
+            self.poll_queue,
         )
 
         self.fade_in()
@@ -609,8 +806,134 @@ class App(ctk.CTk):
         threading.Thread(
             target=check_for_update,
             args=(self.q,),
-            daemon=True
+            daemon=True,
         ).start()
+
+        self.bind_all(
+            "<KeyPress>",
+            self.on_global_keypress,
+            add="+",
+        )
+
+
+    # -----------------------------------------------------------------
+    # JĘZYK
+    # -----------------------------------------------------------------
+
+    def tr(self, key, **kwargs):
+        return t(
+            self.lang,
+            key,
+            **kwargs,
+        )
+
+
+    def choose_language(self):
+        dialog = ctk.CTkToplevel(self)
+
+        dialog.title(
+            self.tr("language_title")
+        )
+
+        dialog.geometry(
+            "360x280"
+        )
+
+        dialog.resizable(
+            False,
+            False,
+        )
+
+        dialog.transient(self)
+        dialog.grab_set()
+
+        self.update_idletasks()
+
+        x = self.winfo_x() + (
+            self.winfo_width() - 360
+        ) // 2
+        y = self.winfo_y() + (
+            self.winfo_height() - 280
+        ) // 2
+
+        if x < 0:
+            x = 100
+        if y < 0:
+            y = 100
+
+        dialog.geometry(
+            f"360x280+{x}+{y}"
+        )
+
+        title = self.lbl(
+            dialog,
+            "NetBlocker",
+            28,
+            True,
+        )
+        title.pack(
+            pady=(28, 2)
+        )
+
+        self.lbl(
+            dialog,
+            self.tr("language_subtitle"),
+            13,
+            False,
+            self.T["muted"],
+        ).pack(
+            pady=(0, 14)
+        )
+
+        selected = tk.StringVar(
+            value="pl"
+        )
+
+        frame = ctk.CTkFrame(
+            dialog,
+            fg_color="transparent",
+        )
+        frame.pack(
+            fill="x",
+            padx=34,
+        )
+
+        for code, name in LANGUAGES.items():
+            ctk.CTkRadioButton(
+                frame,
+                text=name,
+                value=code,
+                variable=selected,
+                font=ctk.CTkFont(
+                    size=14,
+                    weight="bold",
+                ),
+            ).pack(
+                anchor="w",
+                pady=5,
+            )
+
+        def apply():
+            self.lang = selected.get()
+            self.cfg["language"] = self.lang
+            save_config(self.cfg)
+
+            dialog.grab_release()
+            dialog.destroy()
+
+        ctk.CTkButton(
+            dialog,
+            text=self.tr("continue"),
+            width=180,
+            height=40,
+            fg_color=self.T["accent"],
+            hover_color=self.T["accent_h"],
+            command=apply,
+        ).pack(
+            pady=(20, 0)
+        )
+
+        self.wait_window(dialog)
 
 
     # -----------------------------------------------------------------
@@ -620,13 +943,13 @@ class App(ctk.CTk):
     def fade_in(self, step=0.0):
         step = min(
             step + 0.08,
-            1.0
+            1.0,
         )
 
         try:
             self.attributes(
                 "-alpha",
-                step
+                step,
             )
         except Exception:
             return
@@ -634,8 +957,48 @@ class App(ctk.CTk):
         if step < 1.0:
             self.after(
                 15,
-                lambda: self.fade_in(step)
+                lambda: self.fade_in(step),
             )
+
+
+    def fade_to(self, target, step=1.0, callback=None):
+        try:
+            self.attributes(
+                "-alpha",
+                max(0.0, min(1.0, step)),
+            )
+        except Exception:
+            if callback:
+                callback()
+            return
+
+        if abs(step - target) < 0.02:
+            try:
+                self.attributes(
+                    "-alpha",
+                    target,
+                )
+            except Exception:
+                pass
+
+            if callback:
+                callback()
+            return
+
+        direction = (
+            -0.08
+            if step > target
+            else 0.08
+        )
+
+        self.after(
+            15,
+            lambda: self.fade_to(
+                target,
+                step + direction,
+                callback,
+            ),
+        )
 
 
     def pulse_button(
@@ -644,23 +1007,20 @@ class App(ctk.CTk):
         color_a,
         color_b,
         times=6,
-        delay=110
+        delay=110,
     ):
-        if self._pulse_job:
-            try:
-                self.after_cancel(
-                    self._pulse_job
-                )
-            except Exception:
-                pass
-
-            self._pulse_job = None
+        job_id = object()
+        self._pulse_jobs.add(job_id)
 
         def step(i):
-            if not btn.winfo_exists():
+            if job_id not in self._pulse_jobs:
                 return
 
             try:
+                if not btn.winfo_exists():
+                    self._pulse_jobs.discard(job_id)
+                    return
+
                 btn.configure(
                     fg_color=(
                         color_a
@@ -668,25 +1028,27 @@ class App(ctk.CTk):
                         else color_b
                     )
                 )
+
             except Exception:
+                self._pulse_jobs.discard(job_id)
                 return
 
             if i < times:
-                self._pulse_job = self.after(
+                self.after(
                     delay,
-                    lambda: step(i + 1)
+                    lambda: step(i + 1),
                 )
             else:
-                self._pulse_job = None
+                self._pulse_jobs.discard(job_id)
 
         step(0)
 
 
-    def slide_status(
+    def animate_status(
         self,
         label,
         text,
-        color
+        color,
     ):
         try:
             label.configure(
@@ -694,26 +1056,69 @@ class App(ctk.CTk):
                 text_color=color,
                 font=ctk.CTkFont(
                     size=16,
-                    weight="bold"
-                )
+                    weight="bold",
+                ),
             )
 
             self.after(
-                160,
+                150,
                 lambda: label.configure(
                     font=ctk.CTkFont(
                         size=14,
-                        weight="bold"
+                        weight="bold",
                     )
-                )
+                ),
             )
 
         except Exception:
             pass
 
 
+    def show_page(self, page):
+        if page == self._page:
+            return
+
+        self.fade_to(
+            0.72,
+            step=float(
+                self.attributes("-alpha")
+            ),
+            callback=lambda: self._finish_page_change(page),
+        )
+
+
+    def _finish_page_change(self, page):
+        self.show(page)
+        self.fade_in_from(
+            float(
+                self.attributes("-alpha")
+            )
+        )
+
+
+    def fade_in_from(self, step):
+        step = min(
+            step + 0.07,
+            1.0,
+        )
+
+        try:
+            self.attributes(
+                "-alpha",
+                step,
+            )
+        except Exception:
+            return
+
+        if step < 1.0:
+            self.after(
+                15,
+                lambda: self.fade_in_from(step),
+            )
+
+
     # -----------------------------------------------------------------
-    # UI
+    # UI HELPERS
     # -----------------------------------------------------------------
 
     def lbl(
@@ -723,7 +1128,7 @@ class App(ctk.CTk):
         size=13,
         bold=False,
         color=None,
-        **kw
+        **kw,
     ):
         return ctk.CTkLabel(
             parent,
@@ -735,27 +1140,27 @@ class App(ctk.CTk):
                     "bold"
                     if bold
                     else "normal"
-                )
+                ),
             ),
-            **kw
+            **kw,
         )
 
 
     def card(
         self,
         parent,
-        title
+        title,
     ):
         c = ctk.CTkFrame(
             parent,
             corner_radius=14,
-            fg_color=self.T["card"]
+            fg_color=self.T["card"],
         )
 
         c.pack(
             fill="x",
             padx=22,
-            pady=6
+            pady=6,
         )
 
         self.lbl(
@@ -763,11 +1168,11 @@ class App(ctk.CTk):
             title,
             11,
             True,
-            self.T["muted"]
+            self.T["muted"],
         ).pack(
             anchor="w",
             padx=16,
-            pady=(12, 2)
+            pady=(12, 2),
         )
 
         return c
@@ -777,13 +1182,13 @@ class App(ctk.CTk):
 
         if hasattr(self, "combo"):
             try:
-                self.current_label = (
-                    self.combo.get()
-                )
+                self.current_label = self.combo.get()
             except Exception:
                 pass
 
         for w in self.winfo_children():
+            if isinstance(w, ctk.CTkToplevel):
+                continue
             w.destroy()
 
         self.hk_btns = {}
@@ -798,23 +1203,24 @@ class App(ctk.CTk):
 
         self.main_frame = ctk.CTkFrame(
             self,
-            fg_color="transparent"
+            fg_color="transparent",
         )
 
         self.settings_frame = ctk.CTkFrame(
             self,
-            fg_color="transparent"
+            fg_color="transparent",
         )
 
         self.build_main()
         self.build_settings()
+
+        self._page = page
 
         self.show(page)
         self.refresh()
 
 
     def show(self, page):
-
         self.main_frame.pack_forget()
         self.settings_frame.pack_forget()
 
@@ -826,8 +1232,10 @@ class App(ctk.CTk):
 
         frame.pack(
             fill="both",
-            expand=True
+            expand=True,
         )
+
+        self._page = page
 
 
     # -----------------------------------------------------------------
@@ -841,18 +1249,18 @@ class App(ctk.CTk):
 
         header = ctk.CTkFrame(
             f,
-            fg_color="transparent"
+            fg_color="transparent",
         )
 
         header.pack(
             fill="x",
             padx=22,
-            pady=(20, 4)
+            pady=(20, 4),
         )
 
         titles = ctk.CTkFrame(
             header,
-            fg_color="transparent"
+            fg_color="transparent",
         )
 
         titles.pack(side="left")
@@ -861,15 +1269,15 @@ class App(ctk.CTk):
             titles,
             "NetBlocker",
             26,
-            True
+            True,
         ).pack(anchor="w")
 
         self.lbl(
             titles,
-            f"v{VERSION} — odcinaj internet wybranym aplikacjom",
+            f"v{VERSION} — {self.tr('app_subtitle')}",
             12,
             False,
-            T["muted"]
+            T["muted"],
         ).pack(anchor="w")
 
         ctk.CTkButton(
@@ -881,7 +1289,7 @@ class App(ctk.CTk):
             fg_color=T["card"],
             hover_color=T["accent"],
             text_color=T["text"],
-            command=lambda: self.show("settings")
+            command=lambda: self.show_page("settings"),
         ).pack(side="right")
 
         self._header_widget = header
@@ -891,74 +1299,82 @@ class App(ctk.CTk):
         self.update_bar = ctk.CTkFrame(
             f,
             corner_radius=10,
-            fg_color=T["accent"]
+            fg_color=T["accent"],
         )
 
         self.update_lbl = self.lbl(
             self.update_bar,
             "",
-            12,
+            11,
             True,
-            "#ffffff"
+            "#ffffff",
+            wraplength=215,
+            justify="left",
         )
 
         self.update_lbl.pack(
             side="left",
-            padx=12,
-            pady=8
+            fill="both",
+            expand=True,
+            padx=(12, 6),
+            pady=8,
         )
 
-        ctk.CTkButton(
+        self.update_skip_btn = ctk.CTkButton(
             self.update_bar,
-            text="Pobierz",
-            width=80,
-            height=28,
-            fg_color="#ffffff",
-            text_color=T["accent"],
-            hover_color="#e5e5e5",
-            command=self.open_download
-        ).pack(
-            side="right",
-            padx=6,
-            pady=6
-        )
-
-        ctk.CTkButton(
-            self.update_bar,
-            text="Pomiń",
-            width=70,
-            height=28,
+            text=self.tr("skip"),
+            width=62,
+            height=30,
             fg_color="transparent",
             text_color="#ffffff",
             hover_color=T["accent_h"],
-            command=self.dismiss_update
-        ).pack(
+            command=self.dismiss_update,
+        )
+
+        self.update_skip_btn.pack(
             side="right",
-            padx=0,
-            pady=6
+            padx=(0, 4),
+            pady=5,
+        )
+
+        self.update_download_btn = ctk.CTkButton(
+            self.update_bar,
+            text=self.tr("download"),
+            width=78,
+            height=30,
+            fg_color="#ffffff",
+            text_color=T["accent"],
+            hover_color="#e5e5e5",
+            command=self.open_download,
+        )
+
+        self.update_download_btn.pack(
+            side="right",
+            padx=(4, 4),
+            pady=5,
         )
 
         # APLIKACJA
 
         c1 = self.card(
             f,
-            "APLIKACJA"
+            self.tr("application"),
         )
 
         row = ctk.CTkFrame(
             c1,
-            fg_color="transparent"
+            fg_color="transparent",
         )
 
         row.pack(
             fill="x",
             padx=12,
-            pady=(0, 4)
+            pady=(0, 4),
         )
 
         self.combo = ctk.CTkComboBox(
             row,
-            values=["(brak)"],
+            values=[self.tr("none")],
             state="readonly",
             height=36,
             command=self.on_select,
@@ -969,14 +1385,14 @@ class App(ctk.CTk):
             button_hover_color=T["accent_h"],
             dropdown_fg_color=T["card"],
             dropdown_text_color=T["text"],
-            dropdown_hover_color=T["accent"]
+            dropdown_hover_color=T["accent"],
         )
 
         self.combo.pack(
             side="left",
             fill="x",
             expand=True,
-            padx=(4, 6)
+            padx=(4, 6),
         )
 
         ctk.CTkButton(
@@ -987,10 +1403,10 @@ class App(ctk.CTk):
             fg_color=T["accent"],
             hover_color=T["accent_h"],
             text_color="#ffffff",
-            command=self.refresh
+            command=self.refresh,
         ).pack(
             side="left",
-            padx=(0, 4)
+            padx=(0, 4),
         )
 
         self.path_lbl = self.lbl(
@@ -1000,31 +1416,31 @@ class App(ctk.CTk):
             False,
             T["muted"],
             wraplength=390,
-            justify="left"
+            justify="left",
         )
 
         self.path_lbl.pack(
             anchor="w",
             padx=16,
-            pady=(0, 12)
+            pady=(0, 12),
         )
 
         # BLOKADA
 
         c2 = self.card(
             f,
-            "BLOKADA"
+            self.tr("block_section"),
         )
 
         srow = ctk.CTkFrame(
             c2,
-            fg_color="transparent"
+            fg_color="transparent",
         )
 
         srow.pack(
             fill="x",
             padx=16,
-            pady=(0, 8)
+            pady=(0, 8),
         )
 
         self.dot = self.lbl(
@@ -1032,74 +1448,72 @@ class App(ctk.CTk):
             "●",
             18,
             False,
-            T["muted"]
+            T["muted"],
         )
-
         self.dot.pack(side="left")
 
         self.status = self.lbl(
             srow,
-            "Wybierz aplikację",
+            self.tr("choose_app"),
             14,
-            True
+            True,
         )
-
         self.status.pack(
             side="left",
-            padx=8
+            padx=8,
         )
 
         self.toggle_btn = ctk.CTkButton(
             c2,
-            text="Odetnij internet",
+            text=self.tr("cut_internet"),
             height=46,
             font=ctk.CTkFont(
                 size=15,
-                weight="bold"
+                weight="bold",
             ),
             fg_color=T["red"],
             hover_color=T["red_h"],
             text_color="#ffffff",
-            command=lambda: self.toggle()
+            command=lambda: self.toggle(),
         )
 
         self.toggle_btn.pack(
             fill="x",
             padx=16,
-            pady=(0, 16)
+            pady=(0, 16),
         )
 
         # LAG
 
         c3 = self.card(
             f,
-            "LAG"
+            self.tr("lag_section"),
         )
 
         lrow = ctk.CTkFrame(
             c3,
-            fg_color="transparent"
+            fg_color="transparent",
         )
 
         lrow.pack(
             fill="x",
-            padx=16
+            padx=16,
         )
 
         self.lbl(
             lrow,
-            "Czas odcięcia:"
+            self.tr("lag_time"),
         ).pack(side="left")
 
         self.ms_lbl = self.lbl(
             lrow,
             f"{int(self.cfg['lag_ms'])} ms",
             13,
-            True
+            True,
         )
 
         self.ms_lbl.pack(
-            side="right"
+            side="right",
         )
 
         self.slider = ctk.CTkSlider(
@@ -1111,7 +1525,7 @@ class App(ctk.CTk):
             button_color=T["orange"],
             button_hover_color=T["orange_h"],
             fg_color=T["bg"],
-            command=self.on_slider
+            command=self.on_slider,
         )
 
         self.slider.set(
@@ -1121,7 +1535,7 @@ class App(ctk.CTk):
         self.slider.pack(
             fill="x",
             padx=16,
-            pady=(6, 10)
+            pady=(6, 10),
         )
 
         self.lag_btn = ctk.CTkButton(
@@ -1130,18 +1544,18 @@ class App(ctk.CTk):
             height=46,
             font=ctk.CTkFont(
                 size=15,
-                weight="bold"
+                weight="bold",
             ),
             fg_color=T["orange"],
             hover_color=T["orange_h"],
             text_color="#ffffff",
-            command=lambda: self.do_lag()
+            command=lambda: self.do_lag(),
         )
 
         self.lag_btn.pack(
             fill="x",
             padx=16,
-            pady=(0, 16)
+            pady=(0, 16),
         )
 
         self.info = self.lbl(
@@ -1149,21 +1563,21 @@ class App(ctk.CTk):
             "",
             12,
             False,
-            T["muted"]
+            T["muted"],
         )
 
         self.info.pack(
-            pady=(6, 0)
+            pady=(6, 0),
         )
 
         self.lbl(
             f,
-            "Blokada na stałe zostaje w zaporze po zamknięciu programu.",
+            self.tr("permanent_note"),
             10,
             False,
-            T["muted"]
+            T["muted"],
         ).pack(
-            pady=(2, 0)
+            pady=(2, 0),
         )
 
 
@@ -1178,63 +1592,62 @@ class App(ctk.CTk):
 
         header = ctk.CTkFrame(
             f,
-            fg_color="transparent"
+            fg_color="transparent",
         )
 
         header.pack(
             fill="x",
             padx=22,
-            pady=(20, 4)
+            pady=(20, 4),
         )
 
         ctk.CTkButton(
             header,
-            text="← Wróć",
+            text=self.tr("back"),
             width=80,
             height=36,
             fg_color=T["card"],
             hover_color=T["accent"],
             text_color=T["text"],
-            command=lambda: self.show("main")
+            command=lambda: self.show_page("main"),
         ).pack(side="left")
 
         self.lbl(
             header,
-            "Ustawienia",
+            self.tr("settings"),
             22,
-            True
+            True,
         ).pack(
             side="left",
-            padx=14
+            padx=14,
         )
 
         # MOTYW
 
         c1 = self.card(
             f,
-            "MOTYW"
+            self.tr("theme"),
         )
 
         grid = ctk.CTkFrame(
             c1,
-            fg_color="transparent"
+            fg_color="transparent",
         )
 
         grid.pack(
             fill="x",
             padx=12,
-            pady=(0, 12)
+            pady=(0, 12),
         )
 
         grid.columnconfigure(
             (0, 1),
-            weight=1
+            weight=1,
         )
 
-        for i, (name, t) in enumerate(
+        for i, (name, theme) in enumerate(
             THEMES.items()
         ):
-
             selected = (
                 name == self.cfg["theme"]
             )
@@ -1243,49 +1656,102 @@ class App(ctk.CTk):
                 grid,
                 text=(
                     ("✓ " if selected else "")
-                    + name
+                    + self.tr(
+                        THEME_KEYS[name]
+                    )
                 ),
                 height=38,
-                fg_color=t["bg"],
-                hover_color=t["card"],
-                text_color=t["text"],
-                border_width=(
-                    3 if selected else 1
-                ),
-                border_color=t["accent"],
-                command=lambda n=name: self.set_theme(n)
+                fg_color=theme["bg"],
+                hover_color=theme["card"],
+                text_color=theme["text"],
+                border_width=3 if selected else 1,
+                border_color=theme["accent"],
+                command=lambda n=name: self.set_theme(n),
             ).grid(
                 row=i // 2,
                 column=i % 2,
                 padx=4,
                 pady=4,
-                sticky="ew"
+                sticky="ew",
             )
+
+        # JĘZYK
+
+        c_lang = self.card(
+            f,
+            self.tr("language"),
+        )
+
+        self.language_combo = ctk.CTkComboBox(
+            c_lang,
+            values=list(LANGUAGES.values()),
+            state="readonly",
+            height=36,
+            command=self.on_language_combo,
+            fg_color=T["bg"],
+            border_color=T["bg"],
+            text_color=T["text"],
+            button_color=T["accent"],
+            button_hover_color=T["accent_h"],
+            dropdown_fg_color=T["card"],
+            dropdown_text_color=T["text"],
+            dropdown_hover_color=T["accent"],
+        )
+
+        self.language_combo.set(
+            LANGUAGES.get(
+                self.lang,
+                "Polski",
+            )
+        )
+
+        self.language_combo.pack(
+            fill="x",
+            padx=16,
+            pady=(0, 6),
+        )
+
+        self.lbl(
+            c_lang,
+            self.tr("language_desc"),
+            11,
+            False,
+            T["muted"],
+            justify="left",
+        ).pack(
+            anchor="w",
+            padx=16,
+            pady=(0, 14),
+        )
 
         # HOTKEYE
 
         c2 = self.card(
             f,
-            "SKRÓTY KLAWISZOWE (GLOBALNE)"
+            self.tr("hotkeys"),
         )
 
-        for action, label in HOTKEY_LABELS.items():
+        hotkey_labels = {
+            "toggle": self.tr("toggle_hotkey"),
+            "lag": self.tr("lag_hotkey"),
+        }
 
+        for action, label in hotkey_labels.items():
             row = ctk.CTkFrame(
                 c2,
-                fg_color="transparent"
+                fg_color="transparent",
             )
 
             row.pack(
                 fill="x",
                 padx=16,
-                pady=4
+                pady=4,
             )
 
             self.lbl(
                 row,
                 label,
-                13
+                13,
             ).pack(side="left")
 
             ctk.CTkButton(
@@ -1296,9 +1762,9 @@ class App(ctk.CTk):
                 fg_color=T["bg"],
                 hover_color=T["red"],
                 text_color=T["text"],
-                command=lambda a=action: self.clear_hotkey(a)
+                command=lambda a=action: self.clear_hotkey(a),
             ).pack(
-                side="right"
+                side="right",
             )
 
             btn = ctk.CTkButton(
@@ -1309,28 +1775,27 @@ class App(ctk.CTk):
                 fg_color=T["bg"],
                 hover_color=T["accent"],
                 text_color=T["text"],
-                command=lambda a=action: self.start_record(a)
+                command=lambda a=action: self.start_record(a),
             )
 
             btn.pack(
                 side="right",
-                padx=(0, 6)
+                padx=(0, 6),
             )
 
             self.hk_btns[action] = btn
 
         self.lbl(
             c2,
-            "Kliknij pole skrótu i naciśnij nową kombinację klawiszy.\n"
-            "Esc anuluje. Skróty działają na aplikację wybraną na liście.",
+            self.tr("hotkey_help"),
             11,
             False,
             T["muted"],
-            justify="left"
+            justify="left",
         ).pack(
             anchor="w",
             padx=16,
-            pady=(6, 14)
+            pady=(6, 14),
         )
 
         self.refresh_hk_buttons()
@@ -1339,15 +1804,15 @@ class App(ctk.CTk):
 
         c3 = self.card(
             f,
-            "INNE"
+            self.tr("other"),
         )
 
         sw = ctk.CTkSwitch(
             c3,
-            text="Okno zawsze na wierzchu",
+            text=self.tr("always_top"),
             text_color=T["text"],
             progress_color=T["accent"],
-            command=self.on_topmost
+            command=self.on_topmost,
         )
 
         if self.cfg["topmost"]:
@@ -1358,72 +1823,131 @@ class App(ctk.CTk):
         sw.pack(
             anchor="w",
             padx=16,
-            pady=(4, 8)
+            pady=(4, 8),
+        )
+
+        update_sw = ctk.CTkSwitch(
+            c3,
+            text=self.tr("auto_update"),
+            text_color=T["text"],
+            progress_color=T["accent"],
+            command=self.on_auto_update,
+        )
+
+        if self.cfg.get("auto_update", True):
+            update_sw.select()
+
+        self.auto_update_switch = update_sw
+
+        update_sw.pack(
+            anchor="w",
+            padx=16,
+            pady=(0, 12),
         )
 
         # O PROGRAMIE
 
         c4 = self.card(
             f,
-            "O PROGRAMIE"
+            self.tr("about"),
         )
 
         self.version_lbl = self.lbl(
             c4,
-            f"Wersja: {VERSION}",
-            13
+            f"{self.tr('version')}: {VERSION}",
+            13,
         )
 
         self.version_lbl.pack(
             anchor="w",
             padx=16,
-            pady=(0, 4)
+            pady=(0, 4),
         )
 
         ctk.CTkButton(
             c4,
-            text="Sprawdź aktualizacje",
+            text=self.tr("check_updates"),
             height=36,
             fg_color=T["accent"],
             hover_color=T["accent_h"],
             text_color="#ffffff",
-            command=self.manual_check_update
+            command=self.manual_check_update,
         ).pack(
             fill="x",
             padx=16,
-            pady=(4, 16)
+            pady=(4, 16),
         )
 
 
     def set_theme(self, name):
-
         self.cfg["theme"] = name
         self.T = THEMES[name]
 
-        save_config(
-            self.cfg
+        save_config(self.cfg)
+
+        old_page = self._page
+
+        self.fade_to(
+            0.72,
+            step=float(
+                self.attributes("-alpha")
+            ),
+            callback=lambda: (
+                self.build_ui(old_page),
+                self.fade_in_from(0.72),
+            ),
         )
 
-        self.after(
-            10,
-            lambda: self.build_ui("settings")
+
+    def on_language_combo(self, display_name):
+        code = next(
+            (
+                c
+                for c, n in LANGUAGES.items()
+                if n == display_name
+            ),
+            self.lang,
+        )
+
+        if code == self.lang:
+            return
+
+        self.lang = code
+        self.cfg["language"] = code
+        save_config(self.cfg)
+
+        old_page = self._page
+
+        self.fade_to(
+            0.72,
+            step=float(
+                self.attributes("-alpha")
+            ),
+            callback=lambda: (
+                self.build_ui(old_page),
+                self.fade_in_from(0.72),
+            ),
         )
 
 
     def on_topmost(self):
-
         self.cfg["topmost"] = bool(
             self.topmost_switch.get()
         )
 
         self.attributes(
             "-topmost",
-            self.cfg["topmost"]
+            self.cfg["topmost"],
         )
 
-        save_config(
-            self.cfg
+        save_config(self.cfg)
+
+
+    def on_auto_update(self):
+        self.cfg["auto_update"] = bool(
+            self.auto_update_switch.get()
         )
+        save_config(self.cfg)
 
 
     # -----------------------------------------------------------------
@@ -1431,24 +1955,23 @@ class App(ctk.CTk):
     # -----------------------------------------------------------------
 
     def manual_check_update(self):
-
         self.version_lbl.configure(
-            text=f"Wersja: {VERSION}  (sprawdzam...)"
+            text=(
+                f"{self.tr('version')}: {VERSION} "
+                f"{self.tr('checking')}"
+            )
         )
 
         threading.Thread(
             target=self._manual_check_worker,
-            daemon=True
+            daemon=True,
         ).start()
 
 
     def _manual_check_worker(self):
-
         local_q = queue.Queue()
 
-        check_for_update(
-            local_q
-        )
+        check_for_update(local_q)
 
         try:
             item = local_q.get_nowait()
@@ -1458,7 +1981,7 @@ class App(ctk.CTk):
         self.q.put(
             (
                 "manual_check_result",
-                item
+                item,
             )
         )
 
@@ -1466,110 +1989,158 @@ class App(ctk.CTk):
     def show_update_bar(
         self,
         remote_version,
-        url
+        url,
     ):
-
         self._update_url = url
+        self._pending_version = remote_version
 
         self.update_lbl.configure(
-            text=(
-                f"Dostępna nowa wersja "
-                f"{remote_version} "
-                f"(masz {VERSION})"
+            text=self.tr(
+                "available_update",
+                version=remote_version,
+                current=VERSION,
             )
         )
 
-        if not self.update_bar.winfo_ismapped():
+        self.update_download_btn.configure(
+            text=(
+                self.tr("install")
+                if self._update_temp
+                else self.tr("download")
+            ),
+            state="normal",
+        )
 
+        self.update_skip_btn.configure(
+            state="normal",
+            text=self.tr("skip"),
+        )
+
+        if not self.update_bar.winfo_ismapped():
             self.update_bar.pack(
                 fill="x",
                 padx=22,
                 pady=(0, 6),
-                after=self._header_widget
+                after=self._header_widget,
+            )
+
+            self.after(
+                30,
+                lambda: self.pulse_button(
+                    self.update_download_btn,
+                    "#ffffff",
+                    "#dce8ff",
+                    times=2,
+                    delay=90,
+                ),
             )
 
 
     def open_download(self):
+        if self._update_temp and os.path.exists(
+            self._update_temp
+        ):
+            self.install_update(
+                self._update_temp
+            )
+            return
 
-        url = getattr(
-            self,
-            "_update_url",
-            None
-        )
+        url = self._update_url
 
         if not url:
             messagebox.showerror(
                 "NetBlocker",
-                "Nie znaleziono adresu aktualizacji."
+                self.tr("no_update_url"),
             )
             return
 
         current_file = os.path.abspath(
-            sys.argv[0]
+            sys.executable
         )
 
         if not current_file.lower().endswith(
-            ".py"
+            ".exe"
         ):
             messagebox.showerror(
                 "NetBlocker",
-                "Automatyczna aktualizacja jest "
-                "dostępna tylko dla wersji .py."
+                self.tr("update_not_exe"),
             )
             return
 
+        self.begin_update_download(
+            url,
+            current_file,
+            automatic=False,
+        )
+
+
+    def begin_update_download(
+        self,
+        url,
+        current_file,
+        automatic=False,
+    ):
+        if self._update_downloading:
+            return
+
+        self._update_downloading = True
+
         self.update_lbl.configure(
-            text="Pobieranie aktualizacji..."
+            text=self.tr("downloading")
+        )
+
+        self.update_download_btn.configure(
+            text="…",
+            state="disabled",
+        )
+
+        self.update_skip_btn.configure(
+            state="disabled",
         )
 
         threading.Thread(
             target=self._download_update_worker,
             args=(
                 url,
-                current_file
+                current_file,
+                automatic,
             ),
-            daemon=True
+            daemon=True,
         ).start()
 
 
     def _download_update_worker(
         self,
         url,
-        current_file
+        current_file,
+        automatic,
     ):
-
         try:
             import requests
 
             r = requests.get(
                 url,
-                timeout=15,
+                timeout=60,
                 headers={
                     "Cache-Control": "no-cache",
-                    "Pragma": "no-cache"
-                }
+                    "Pragma": "no-cache",
+                },
             )
 
             r.raise_for_status()
 
-            new_code = r.content
+            new_exe = r.content
 
-            if len(new_code) < 1000:
+            if len(new_exe) < UPDATE_MIN_SIZE:
                 raise RuntimeError(
-                    "Pobrany plik jest podejrzanie mały."
+                    self.tr("invalid_update")
                 )
 
-            try:
-                compile(
-                    new_code.decode("utf-8"),
-                    current_file,
-                    "exec"
-                )
-
-            except Exception:
+            if not new_exe.startswith(
+                b"MZ"
+            ):
                 raise RuntimeError(
-                    "Pobrany plik nie jest poprawnym "
-                    "skryptem Python."
+                    self.tr("invalid_update")
                 )
 
             temp_file = (
@@ -1579,90 +2150,164 @@ class App(ctk.CTk):
 
             with open(
                 temp_file,
-                "wb"
+                "wb",
             ) as f:
-                f.write(new_code)
+                f.write(new_exe)
 
             self.q.put(
                 (
                     "update_downloaded",
                     current_file,
-                    temp_file
+                    temp_file,
+                    automatic,
                 )
             )
 
         except Exception as e:
-
             self.q.put(
                 (
                     "update_error",
-                    str(e)
+                    str(e),
                 )
             )
 
 
-    def install_update(
+    def create_updater_script(
         self,
         current_file,
-        temp_file
+        temp_file,
     ):
+        current_file = os.path.abspath(
+            current_file
+        )
+        temp_file = os.path.abspath(
+            temp_file
+        )
+
+        pid = os.getpid()
+
+        bat_path = os.path.join(
+            os.path.dirname(current_file),
+            "NetBlockerUpdater.cmd",
+        )
+
+        def bat_quote(value):
+            return value.replace("%", "%%")
+
+        old_q = bat_quote(current_file)
+        new_q = bat_quote(temp_file)
+
+        script = f"""@echo off
+setlocal
+set "OLD={old_q}"
+set "NEW={new_q}"
+set "PID={pid}"
+
+:WAIT
+tasklist /FI "PID eq %PID%" 2>NUL | findstr /R /C:" %PID% " >NUL
+if not errorlevel 1 (
+    timeout /t 1 /nobreak >NUL
+    goto WAIT
+)
+
+set /a TRY=0
+
+:REPLACE
+set /a TRY+=1
+if exist "%OLD%" (
+    move /Y "%NEW%" "%OLD%" >NUL 2>&1
+) else (
+    move /Y "%NEW%" "%OLD%" >NUL 2>&1
+)
+
+if exist "%NEW%" if %TRY% LSS 15 (
+    timeout /t 1 /nobreak >NUL
+    goto REPLACE
+)
+
+if exist "%NEW%" (
+    exit /b 1
+)
+
+start "" "%OLD%"
+
+del "%~f0" >NUL 2>&1
+exit /b 0
+"""
+
+        with open(
+            bat_path,
+            "w",
+            encoding="utf-8",
+        ) as f:
+            f.write(script)
+
+        return bat_path
+
+
+    def install_update(self, temp_file):
+        current_file = os.path.abspath(
+            sys.executable
+        )
 
         try:
-
-            if os.path.exists(
-                current_file
+            if not current_file.lower().endswith(
+                ".exe"
             ):
-                os.remove(
-                    current_file
+                raise RuntimeError(
+                    self.tr("update_not_exe")
                 )
 
-            os.replace(
+            if not os.path.exists(temp_file):
+                raise RuntimeError(
+                    self.tr("invalid_update")
+                )
+
+            updater = self.create_updater_script(
+                current_file,
                 temp_file,
-                current_file
             )
 
             subprocess.Popen(
                 [
-                    sys.executable,
-                    current_file
+                    "cmd.exe",
+                    "/c",
+                    updater,
                 ],
                 cwd=os.path.dirname(
                     current_file
-                )
+                ),
+                creationflags=getattr(
+                    subprocess,
+                    "CREATE_NO_WINDOW",
+                    0,
+                ),
             )
+
+            try:
+                keyboard.unhook_all()
+            except Exception:
+                pass
 
             self.destroy()
 
         except Exception as e:
-
-            try:
-                if os.path.exists(
-                    temp_file
-                ):
-                    os.remove(
-                        temp_file
-                    )
-            except Exception:
-                pass
-
             messagebox.showerror(
                 "NetBlocker",
-                "Nie udało się zainstalować "
-                f"aktualizacji:\n{e}"
+                self.tr(
+                    "install_error",
+                    error=e,
+                ),
             )
 
 
     def dismiss_update(self):
-
-        self.cfg["skip_version"] = getattr(
-            self,
-            "_pending_version",
-            None
+        self.cfg["skip_version"] = (
+            self._pending_version
         )
 
-        save_config(
-            self.cfg
-        )
+        save_config(self.cfg)
+        self._update_temp = None
 
         self.update_bar.pack_forget()
 
@@ -1672,14 +2317,12 @@ class App(ctk.CTk):
     # -----------------------------------------------------------------
 
     def register_hotkeys(self):
-
         try:
             keyboard.clear_all_hotkeys()
         except Exception:
             pass
 
         for action, hk in self.cfg["hotkeys"].items():
-
             if not hk:
                 continue
 
@@ -1687,14 +2330,13 @@ class App(ctk.CTk):
                 keyboard.add_hotkey(
                     hk,
                     lambda a=action:
-                    self.q.put(a)
+                    self.q.put(a),
                 )
             except Exception:
                 pass
 
 
     def start_record(self, action):
-
         if self.recording:
             return
 
@@ -1708,7 +2350,6 @@ class App(ctk.CTk):
         self.refresh_hk_buttons()
 
         def worker():
-
             try:
                 hk = keyboard.read_hotkey(
                     suppress=False
@@ -1720,26 +2361,24 @@ class App(ctk.CTk):
                 (
                     "recorded",
                     action,
-                    hk
+                    hk,
                 )
             )
 
         threading.Thread(
             target=worker,
-            daemon=True
+            daemon=True,
         ).start()
 
 
     def on_recorded(
         self,
         action,
-        hk
+        hk,
     ):
-
         self.recording = None
 
         if hk and hk != "esc":
-
             other = (
                 "lag"
                 if action == "toggle"
@@ -1750,20 +2389,16 @@ class App(ctk.CTk):
                 self.cfg["hotkeys"].get(other)
                 == hk
             ):
-
                 messagebox.showwarning(
                     "NetBlocker",
-                    f"Skrót {fmt_hotkey(hk)} "
-                    "jest już użyty w innej akcji."
+                    self.tr(
+                        "hotkey_used",
+                        hotkey=fmt_hotkey(hk),
+                    ),
                 )
-
             else:
-
                 self.cfg["hotkeys"][action] = hk
-
-                save_config(
-                    self.cfg
-                )
+                save_config(self.cfg)
 
         self.register_hotkeys()
         self.refresh_hk_buttons()
@@ -1772,15 +2407,12 @@ class App(ctk.CTk):
 
 
     def clear_hotkey(self, action):
-
         if self.recording:
             return
 
         self.cfg["hotkeys"][action] = None
 
-        save_config(
-            self.cfg
-        )
+        save_config(self.cfg)
 
         self.register_hotkeys()
         self.refresh_hk_buttons()
@@ -1789,17 +2421,15 @@ class App(ctk.CTk):
 
 
     def refresh_hk_buttons(self):
-
         for action, btn in self.hk_btns.items():
-
             text = (
-                "Naciśnij skrót…"
+                self.tr("record_hotkey")
                 if self.recording == action
                 else (
                     fmt_hotkey(
                         self.cfg["hotkeys"].get(action)
                     )
-                    or "— brak —"
+                    or self.tr("no_hotkey")
                 )
             )
 
@@ -1816,28 +2446,23 @@ class App(ctk.CTk):
     # -----------------------------------------------------------------
 
     def poll_queue(self):
-
         try:
-
             while True:
-
                 item = self.q.get_nowait()
 
                 if (
                     isinstance(item, tuple)
                     and item[0] == "recorded"
                 ):
-
                     self.on_recorded(
                         item[1],
-                        item[2]
+                        item[2],
                     )
 
                 elif (
                     isinstance(item, tuple)
                     and item[0] == "update_available"
                 ):
-
                     _, remote_version, url = item
 
                     self._pending_version = (
@@ -1850,18 +2475,34 @@ class App(ctk.CTk):
                     ):
                         self.show_update_bar(
                             remote_version,
-                            url
+                            url,
                         )
+
+                        if (
+                            self.cfg.get(
+                                "auto_update",
+                                True,
+                            )
+                            and self._page == "main"
+                        ):
+                            self.after(
+                                120,
+                                lambda u=url: self.begin_update_download(
+                                    u,
+                                    os.path.abspath(
+                                        sys.executable
+                                    ),
+                                    automatic=True,
+                                ),
+                            )
 
                 elif (
                     isinstance(item, tuple)
                     and item[0] == "manual_check_result"
                 ):
-
                     result = item[1]
 
                     if result:
-
                         _, remote_version, url = result
 
                         self._pending_version = (
@@ -1870,22 +2511,20 @@ class App(ctk.CTk):
 
                         self.show_update_bar(
                             remote_version,
-                            url
+                            url,
                         )
 
                         self.version_lbl.configure(
                             text=(
-                                f"Wersja: {VERSION} "
-                                f"(nowa: {remote_version})"
+                                f"{self.tr('version')}: {VERSION} "
+                                f"{self.tr('new_version', version=remote_version)}"
                             )
                         )
-
                     else:
-
                         self.version_lbl.configure(
                             text=(
-                                f"Wersja: {VERSION} "
-                                "(to najnowsza wersja)"
+                                f"{self.tr('version')}: {VERSION} "
+                                f"{self.tr('latest')}"
                             )
                         )
 
@@ -1893,76 +2532,93 @@ class App(ctk.CTk):
                     isinstance(item, tuple)
                     and item[0] == "update_downloaded"
                 ):
+                    (
+                        _,
+                        current_file,
+                        temp_file,
+                        automatic,
+                    ) = item
 
-                    _, current_file, temp_file = item
+                    self._update_downloading = False
+                    self._update_temp = temp_file
 
-                    result = messagebox.askyesno(
-                        "NetBlocker",
-                        "Aktualizacja została pobrana.\n\n"
-                        "Program zostanie zamknięty "
-                        "i uruchomiony ponownie "
-                        "w nowej wersji.\n\n"
-                        "Kontynuować?"
+                    self.update_download_btn.configure(
+                        text=self.tr("install"),
+                        state="normal",
                     )
 
-                    if result:
+                    self.update_skip_btn.configure(
+                        state="normal",
+                    )
 
-                        self.install_update(
-                            current_file,
-                            temp_file
+                    self.update_lbl.configure(
+                        text=(
+                            self.tr("downloaded_ready")
                         )
+                    )
 
-                    else:
+                    self.pulse_button(
+                        self.update_download_btn,
+                        "#ffffff",
+                        "#dce8ff",
+                        times=4,
+                        delay=80,
+                    )
 
-                        try:
-                            os.remove(
-                                temp_file
-                            )
-                        except Exception:
-                            pass
+                    install_now = messagebox.askyesno(
+                        "NetBlocker",
+                        self.tr("install_now"),
+                    )
 
-                        self.update_lbl.configure(
-                            text=(
-                                "Aktualizacja pobrana, "
-                                "ale nie została zainstalowana."
-                            )
+                    if install_now:
+                        self.install_update(
+                            temp_file
                         )
 
                 elif (
                     isinstance(item, tuple)
                     and item[0] == "update_error"
                 ):
-
                     _, error = item
 
+                    self._update_downloading = False
+
                     self.update_lbl.configure(
-                        text=(
-                            "Nie udało się pobrać aktualizacji."
+                        text=self.tr(
+                            "download_error_bar"
                         )
+                    )
+
+                    self.update_download_btn.configure(
+                        text=self.tr("download"),
+                        state="normal",
+                    )
+
+                    self.update_skip_btn.configure(
+                        state="normal",
                     )
 
                     messagebox.showerror(
                         "NetBlocker",
-                        f"Nie udało się pobrać aktualizacji:\n{error}"
+                        self.tr(
+                            "download_failed",
+                            error=error,
+                        ),
                     )
 
                 elif item == "toggle":
-
                     now = time.time()
 
                     if (
                         now - self._last_toggle
                         > 0.4
                     ):
-
                         self._last_toggle = now
-
                         self.toggle(
                             silent=True
                         )
 
                 elif item == "lag":
-
                     self.do_lag(
                         silent=True
                     )
@@ -1972,21 +2628,20 @@ class App(ctk.CTk):
 
         self.after(
             30,
-            self.poll_queue
+            self.poll_queue,
         )
 
 
     # -----------------------------------------------------------------
-    # LISTA APLIKACJI
+    # LISTA APLIKACJI + WYBÓR LITERĄ
     # -----------------------------------------------------------------
 
     def refresh(self):
-
         self.apps = list_apps()
 
         labels = (
             list(self.apps.keys())
-            or ["(brak)"]
+            or [self.tr("none")]
         )
 
         self.combo.configure(
@@ -1995,8 +2650,7 @@ class App(ctk.CTk):
 
         label = (
             self.current_label
-            if self.current_label
-            in self.apps
+            if self.current_label in self.apps
             else None
         )
 
@@ -2004,9 +2658,7 @@ class App(ctk.CTk):
             label is None
             and self.cfg.get("last_app")
         ):
-
             for l, p in self.apps.items():
-
                 if (
                     p.lower()
                     == self.cfg["last_app"].lower()
@@ -2018,39 +2670,119 @@ class App(ctk.CTk):
             label or labels[0]
         )
 
+        self.current_label = (
+            label or labels[0]
+        )
+
         self.update_status()
+
+        if hasattr(self, "info"):
+            self.flash(
+                self.tr("refresh")
+            )
+
+
+    def on_global_keypress(self, event):
+        if self._page != "main":
+            return
+
+        if self.recording:
+            return
+
+        if isinstance(event.widget, tk.Entry):
+            return
+
+        key = (event.keysym or "").lower()
+
+        if len(key) != 1 or not (
+            "a" <= key <= "z"
+            or "0" <= key <= "9"
+        ):
+            return
+
+        matches = [
+            label
+            for label in self.apps.keys()
+            if label.lower().startswith(key)
+        ]
+
+        if not matches:
+            self.flash(
+                self.tr(
+                    "no_process_letter",
+                    letter=key.upper(),
+                )
+            )
+            return
+
+        now = time.time()
+
+        if (
+            self._key_cycle_letter == key
+            and now - self._key_cycle_time < 1.2
+        ):
+            self._key_cycle_index = (
+                self._key_cycle_index + 1
+            ) % len(matches)
+        else:
+            self._key_cycle_letter = key
+            self._key_cycle_index = 0
+
+        self._key_cycle_time = now
+
+        label = matches[
+            self._key_cycle_index
+        ]
+
+        self.combo.set(label)
+        self.current_label = label
+
+        path = self.apps.get(label)
+        if path:
+            self.cfg["last_app"] = path
+            save_config(self.cfg)
+
+        self.update_status()
+
+        self.pulse_button(
+            self.toggle_btn,
+            self.T["accent"],
+            self.toggle_btn.cget("fg_color"),
+            times=2,
+            delay=75,
+        )
+
+        self.flash(
+            self.tr(
+                "process_found",
+                name=label,
+            )
+        )
 
 
     def on_select(self, label):
-
         self.current_label = label
 
         path = self.apps.get(label)
 
         if path:
-
             self.cfg["last_app"] = path
-
-            save_config(
-                self.cfg
-            )
+            save_config(self.cfg)
 
         self.update_status()
 
 
     def selected_path(self):
-
         return self.apps.get(
             self.combo.get()
         )
 
 
     def toggle_text(self, blocked):
-
         base = (
-            "Przywróć internet"
+            self.tr("restore_internet")
             if blocked
-            else "Odetnij internet"
+            else self.tr("cut_internet")
         )
 
         hk = self.cfg["hotkeys"].get(
@@ -2065,33 +2797,29 @@ class App(ctk.CTk):
 
 
     def lag_text(self):
-
         hk = self.cfg["hotkeys"].get(
             "lag"
         )
 
         return (
-            f"⚡ LAG   [{fmt_hotkey(hk)}]"
+            f"{self.tr('lag')}   [{fmt_hotkey(hk)}]"
             if hk
-            else "⚡ LAG"
+            else self.tr("lag")
         )
 
 
     def update_status(self):
-
         T = self.T
         path = self.selected_path()
 
         try:
-
             if not path:
-
                 self.path_lbl.configure(
                     text=""
                 )
 
                 self.status.configure(
-                    text="Wybierz aplikację"
+                    text=self.tr("choose_app")
                 )
 
                 self.dot.configure(
@@ -2101,9 +2829,8 @@ class App(ctk.CTk):
                 self.toggle_btn.configure(
                     text=self.toggle_text(False),
                     fg_color=T["red"],
-                    hover_color=T["red_h"]
+                    hover_color=T["red_h"],
                 )
-
                 return
 
             self.path_lbl.configure(
@@ -2111,35 +2838,32 @@ class App(ctk.CTk):
             )
 
             if is_blocked(path):
-
                 self.dot.configure(
                     text_color=T["red"]
                 )
 
                 self.status.configure(
-                    text="Internet ODCIĘTY"
+                    text=self.tr("blocked")
                 )
 
                 self.toggle_btn.configure(
                     text=self.toggle_text(True),
                     fg_color=T["green"],
-                    hover_color=T["green_h"]
+                    hover_color=T["green_h"],
                 )
-
             else:
-
                 self.dot.configure(
                     text_color=T["green"]
                 )
 
                 self.status.configure(
-                    text="Internet działa"
+                    text=self.tr("working")
                 )
 
                 self.toggle_btn.configure(
                     text=self.toggle_text(False),
                     fg_color=T["red"],
-                    hover_color=T["red_h"]
+                    hover_color=T["red_h"],
                 )
 
         except Exception:
@@ -2147,16 +2871,14 @@ class App(ctk.CTk):
 
 
     def flash(self, msg):
-
         try:
-
             self.info.configure(
                 text=msg
             )
 
             self.after(
                 1800,
-                lambda: self._clear_info(msg)
+                lambda: self._clear_info(msg),
             )
 
         except Exception:
@@ -2164,9 +2886,7 @@ class App(ctk.CTk):
 
 
     def _clear_info(self, msg):
-
         try:
-
             if (
                 self.info.cget("text")
                 == msg
@@ -2174,7 +2894,6 @@ class App(ctk.CTk):
                 self.info.configure(
                     text=""
                 )
-
         except Exception:
             pass
 
@@ -2185,61 +2904,55 @@ class App(ctk.CTk):
 
     def toggle(
         self,
-        silent=False
+        silent=False,
     ):
-
         T = self.T
         path = self.selected_path()
 
         if not path:
-
             if silent:
                 self.flash(
-                    "Nie wybrano aplikacji"
+                    self.tr("no_app_short")
                 )
             else:
                 messagebox.showinfo(
                     "NetBlocker",
-                    "Najpierw wybierz aplikację."
+                    self.tr("no_app"),
                 )
-
             return
 
         try:
-
             if is_blocked(path):
-
                 remove_rules(
                     path,
-                    "block"
+                    "block",
                 )
 
                 self.flash(
-                    "Internet przywrócony"
+                    self.tr("internet_restored")
                 )
 
-                self.slide_status(
+                self.animate_status(
                     self.status,
-                    "Internet działa",
-                    T["green"]
+                    self.tr("working"),
+                    T["green"],
                 )
 
             else:
-
                 ensure_rules(
                     path,
                     "block",
-                    True
+                    True,
                 )
 
                 self.flash(
-                    "Internet odcięty"
+                    self.tr("internet_cut")
                 )
 
-                self.slide_status(
+                self.animate_status(
                     self.status,
-                    "Internet ODCIĘTY",
-                    T["red"]
+                    self.tr("blocked"),
+                    T["red"],
                 )
 
             self.pulse_button(
@@ -2247,15 +2960,16 @@ class App(ctk.CTk):
                 T["accent"],
                 self.toggle_btn.cget("fg_color"),
                 times=2,
-                delay=90
+                delay=90,
             )
 
         except Exception as e:
-
             messagebox.showerror(
                 "NetBlocker",
-                "Nie udało się zmienić "
-                f"reguły zapory:\n{e}"
+                self.tr(
+                    "firewall_error",
+                    error=e,
+                ),
             )
 
         self.update_status()
@@ -2266,7 +2980,6 @@ class App(ctk.CTk):
     # -----------------------------------------------------------------
 
     def on_slider(self, v):
-
         self.cfg["lag_ms"] = int(v)
 
         self.ms_lbl.configure(
@@ -2279,12 +2992,10 @@ class App(ctk.CTk):
 
 
     def set_lag_btn(self, running):
-
         try:
-
             self.lag_btn.configure(
                 text=(
-                    "LAG…"
+                    self.tr("lag_running")
                     if running
                     else self.lag_text()
                 ),
@@ -2292,56 +3003,47 @@ class App(ctk.CTk):
                     "disabled"
                     if running
                     else "normal"
-                )
+                ),
             )
-
         except Exception:
             pass
 
 
     def do_lag(
         self,
-        silent=False
+        silent=False,
     ):
-
         path = self.selected_path()
 
         if not path:
-
             if silent:
                 self.flash(
-                    "Nie wybrano aplikacji"
+                    self.tr("no_app_short")
                 )
             else:
                 messagebox.showinfo(
                     "NetBlocker",
-                    "Najpierw wybierz aplikację."
+                    self.tr("no_app"),
                 )
-
             return
 
         if self.lag_running:
             return
 
         try:
-
             if path not in self.lag_paths:
-
                 ensure_rules(
                     path,
                     "lag",
-                    False
+                    False,
                 )
-
                 self.lag_paths.add(
                     path
                 )
 
             self.lag_running = True
 
-            self.set_lag_btn(
-                True
-            )
+            self.set_lag_btn(True)
 
             self.pulse_button(
                 self.lag_btn,
@@ -2350,53 +3052,50 @@ class App(ctk.CTk):
                 times=int(
                     max(
                         2,
-                        self.cfg["lag_ms"] / 120
+                        self.cfg["lag_ms"] / 120,
                     )
                 ),
-                delay=100
+                delay=100,
             )
 
             set_enabled(
                 path,
                 "lag",
-                True
+                True,
             )
 
             self.after(
                 int(self.cfg["lag_ms"]),
-                lambda: self.end_lag(path)
+                lambda: self.end_lag(path),
             )
 
         except Exception as e:
-
             self.lag_running = False
 
-            self.set_lag_btn(
-                False
-            )
+            self.set_lag_btn(False)
 
             messagebox.showerror(
                 "NetBlocker",
-                f"Nie udało się wywołać lagu:\n{e}"
+                self.tr(
+                    "lag_error",
+                    error=e,
+                ),
             )
 
 
     def end_lag(self, path):
-
         set_enabled(
             path,
             "lag",
-            False
+            False,
         )
 
         self.lag_running = False
 
-        self.set_lag_btn(
-            False
-        )
+        self.set_lag_btn(False)
 
         self.flash(
-            "Lag zakończony"
+            self.tr("lag_finished")
         )
 
 
@@ -2405,7 +3104,6 @@ class App(ctk.CTk):
     # -----------------------------------------------------------------
 
     def on_close(self):
-
         try:
             keyboard.unhook_all()
         except Exception:
@@ -2416,7 +3114,7 @@ class App(ctk.CTk):
         ):
             remove_rules(
                 path,
-                "lag"
+                "lag",
             )
 
         save_config(
@@ -2426,15 +3124,15 @@ class App(ctk.CTk):
         self.destroy()
 
 
-# =====================================================================
+# ---------------------------------------------------------------------
 # START
-# =====================================================================
+# ---------------------------------------------------------------------
 
 if __name__ == "__main__":
 
     if sys.platform != "win32":
         sys.exit(
-            "Ten skrypt działa tylko na Windows."
+            "Ten program działa tylko na Windows."
         )
 
     if not is_admin():
@@ -2443,3 +3141,9 @@ if __name__ == "__main__":
     cleanup_stale_lag_rules()
 
     App().mainloop()
+'''
+
+path = Path("/mnt/data/net_blocker_v1_3_0.py")
+path.write_text(code, encoding="utf-8")
+print(path)
+print(f"Rozmiar: {path.stat().st_size} B")
